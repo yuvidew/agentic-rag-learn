@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from fastapi import APIRouter,  UploadFile, File, HTTPException, Header
 from pydantic import BaseModel, Field
@@ -8,11 +9,16 @@ from app.rag.vectorestore import add_documents
 from app.services.ingestion import load_files, chunk_documents, SUPPORTED
 from app.services.audit import init_db, write_audit
 
+logger = logging.getLogger(__name__)
+
+
 router = APIRouter(prefix="/api")
 settings = get_settings()
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=2, max_length=3000)
+    user_id: str = Field(default="default", max_length=100)
+
 
 @router.get("/health")
 def health():
@@ -21,7 +27,7 @@ def health():
 @router.post("/chat")
 def chat(payload: ChatRequest):
     try:
-        result = ask(payload.question)
+        result = ask(payload.question, payload.user_id)
         write_audit(payload.question, result["source_used"], result.get("trace", []))
 
         return {
@@ -32,6 +38,7 @@ def chat(payload: ChatRequest):
             "rewritten_query": result.get("current_query", payload.question)
         }
     except Exception as exc:
+        logger.exception("chat failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 @router.post("/ingest")

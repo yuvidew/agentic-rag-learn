@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     app_name: str = "Enterprise IT Support Agentic RAG Copilot"
     app_env: str = "development"
     groq_api_key: str = ""
+    mistral_api_key: str = os.getenv("MISTRAL_AI")
     tavily_api_key: str = ""
+    mem0_api_key: str = ""
     pinecone_api_key: str = os.getenv("PINECODE_API_KEY")
     pinecone_index_name: str = os.getenv("PINECONE_INDEX_KEY")
     pinecone_namespace: str = os.getenv("PINECONE_NAMESPACE")

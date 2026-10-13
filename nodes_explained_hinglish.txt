@@ -1,0 +1,193 @@
+AGENTIC RAG - nodes.py KE HAR FUNCTION KI EXPLANATION (HINGLISH)
+==================================================================
+
+BASIC IDEA (pehle ye samjho)
+----------------------------
+- Har NODE ek function hai jo "state" (ek dictionary) leta hai aur ek chhota
+  dictionary return karta hai. LangGraph us chhote dictionary ko purani state
+  mein merge kar deta hai. Matlab node sirf wahi keys return karta hai jo
+  usne change ki hain.
+- ROUTING function (router_after_router, after_kb, after_web) state padhta hai
+  aur agle node ka NAAM return karta hai. Yani "ab kahan jana hai" wo decide
+  karta hai.
+
+STATE ki important keys:
+  question       -> user ka original sawal (kabhi change nahi hota)
+  current_query  -> jo query search mein use hoti hai (rewrite ke baad badal jaati hai)
+  kb_docs        -> private KB se mile chunks
+  web_results    -> web search ka text
+  kb_grade       -> "good" ya "weak" (KB evidence)
+  web_grade      -> "good" ya "weak" (web evidence)
+  answer         -> final jawab
+  source_used    -> jawab kahan se aaya (kb / web / direct / insufficient_evidence)
+  retry_count    -> kitni baar query rewrite ho chuki hai
+  trace          -> steps ka log (debugging ke liye)
+  citations      -> sources ki list
+
+
+1) add_trace(state, message)
+----------------------------
+Kaam: trace list mein ek nayi line jodna.
+Kaise: [*state.get("trace", []), message] -> purani list ki copy banake
+       usme naya message add karta hai. Purani list ko change nahi karta.
+Kyun zaroori: end mein trace dekh ke pata chalta hai ki sawal ne kaun sa
+       raasta liya (debugging aur UI ke liye).
+
+
+2) route_question(state)   [NODE 1]
+-----------------------------------
+Kaam: decide karna ki sawal company ke IT knowledge se related hai ya sirf
+      casual baat (hi, thanks).
+Kaise: LLM ko structured output (RouteDecision) ke saath bulate hain. Wo JSON
+       deta hai, jaise {"route":"kb"}.
+       - kb     -> VPN, password reset, MFA, laptop, software access, email,
+                   security, devices, troubleshooting
+       - direct -> greeting, thanks, casual chat
+Likhta hai: source_used ("kb" ya "direct") aur trace.
+
+
+3) router_after_router(state)   [ROUTING]
+------------------------------------------
+Kaam: router ke decision ko agle node mein badalna.
+Rule:
+  source_used == "kb"  -> "retrieve_kb"
+  warna                -> "direct_answer"
+
+
+4) retrieve_kb(state)   [NODE 2]
+--------------------------------
+Kaam: private vector store se related chunks nikalna.
+Kaise: get_retriever().invoke(state["current_query"])
+       Dhyan do: yahan "current_query" use hoti hai, "question" nahi. Isliye
+       rewrite ke baad nayi query se search hoti hai.
+Likhta hai: kb_docs (chunks ki list) aur trace (kitne chunks mile).
+
+
+5) grade_kb(state)   [NODE 3]
+-----------------------------
+Kaam: check karna ki mile hue chunks se confident jawab diya ja sakta hai ya nahi.
+Kaise:
+  - Saare chunks ko ek context string mein jodta hai (har chunk ke upar source ka naam).
+  - LLM {"grade":"good"} ya {"grade":"weak"} deta hai.
+  - "good" tabhi jab evidence sufficient aur specific ho.
+Likhta hai: kb_grade aur trace.
+
+
+6) after_kb(state)   [ROUTING]
+------------------------------
+Rule:
+  kb_grade == "good"  -> "generate_from_kb"  (KB se jawab do)
+  warna (weak)        -> "search_web"        (web fallback)
+
+
+7) search_web(state)   [NODE 4]
+-------------------------------
+Kaam: KB kaafi nahi tha to internet (Tavily) se jaankari lana.
+Kaise: web_search_tool().invoke({"query": current_query})
+  Result dictionary ho to:
+    - agar "answer" hai to "Search answer: ..." line banta hai
+    - har result ke liye "Title / URL / Content" ka block banta hai
+    - citations mein {title, url, type:"web"} add hota hai
+  Result dictionary na ho to seedha str(result) use hota hai.
+Likhta hai: web_results, citations, source_used="web", trace.
+
+
+8) grade_web(state)   [NODE 5]
+------------------------------
+Kaam: web evidence ko grade karna (grade_kb jaisa hi, bas web text ke liye).
+Kaise: LLM "good" deta hai agar evidence sufficient aur directly relevant ho,
+       warna "weak".
+Likhta hai: web_grade aur trace.
+
+
+9) after_web(state)   [ROUTING - 3 raaste]
+------------------------------------------
+Is order mein check hota hai:
+  1. web_grade == "good"                  -> "generate_from_web"
+  2. retry_count < settings.max_retries   -> "rewrite_query"  (dobara koshish)
+  3. warna                                -> "insufficient"   (haar maan lo)
+
+
+10) rewrite_query(state)   [NODE 6]
+------------------------------------
+Kaam: behtar search query banana.
+Kaise: LLM original question ko technical keywords ke saath rewrite karta hai.
+       Wo jawab nahi deta, sirf nayi query return karta hai (.content.strip()).
+Likhta hai:
+  current_query -> nayi query
+  retry_count   -> +1 (isi se loop kabhi na kabhi rukta hai)
+  trace
+Uske baad hamesha retrieve_kb pe wapas jata hai. Yani nayi query pehle KB
+mein try hoti hai, phir zarurat padi to web mein.
+
+
+11) generate_from_kb(state)   [FINAL ANSWER - KB]
+-------------------------------------------------
+Kaam: private KB ke basis pe jawab likhna.
+Kaise:
+  - Context banata hai: "[Source: file] chunk text"
+  - LLM ko bolta hai: SIRF KB se jawab do, short aur actionable raho,
+    policy details invent mat karo, aur batao ki jawab company ke private
+    knowledge base pe based hai.
+  - Citations banata hai. "seen" set se duplicate sources hat jaate hain.
+    Title = file ka naam (split("/")[-1]).
+Likhta hai: answer, citations (type "private_kb"), source_used="private_kb", trace.
+
+
+12) generate_from_web(state)   [FINAL ANSWER - WEB]
+---------------------------------------------------
+Kaam: web evidence se jawab likhna.
+Kaise: Prompt mein likha hai ki KB insufficient tha, SIRF web evidence se
+       jawab do, aur saaf batao ki ye external web information hai jise
+       company systems badalne se pehle IT se validate karana chahiye.
+Likhta hai: answer, source_used="web_search", trace.
+Citations yahan nahi likhta; wo search_web pehle hi state mein daal chuka hai.
+
+
+13) direct_answer(state)   [FINAL ANSWER - DIRECT]
+--------------------------------------------------
+Kaam: hi / thanks jaise casual messages ka jawab.
+Kaise: ek chhota LLM call, koi retrieval nahi, koi KB nahi.
+Likhta hai: answer, source_used="direct", trace.
+
+
+14) insufficient(state)   [FINAL ANSWER - FAILURE]
+--------------------------------------------------
+Kaam: jab KB aur web dono fail ho jaayein aur retries khatam ho jaayein, tab
+      safe tareeke se mana karna.
+Kaise: LLM call nahi karta. Ek fixed message deta hai: "reliable evidence
+       nahi mila, IT help desk se contact karo". Isse galat ya banaya hua
+       jawab nahi jaata.
+Likhta hai: answer, source_used="insufficient_evidence", trace.
+
+
+COMPLETE FLOW (ek line mein)
+----------------------------
+START -> route_question -> (kb?) -> retrieve_kb -> grade_kb
+   good -> generate_from_kb -> END
+   weak -> search_web -> grade_web
+              good -> generate_from_web -> END
+              weak + retries bache -> rewrite_query -> retrieve_kb (loop)
+              weak + retries khatam -> insufficient -> END
+(direct?) -> direct_answer -> END
+
+
+EXAMPLE: "VPN password kaise reset karein?"
+------------------------------------------
+1. route_question -> "kb", to retrieve_kb chalta hai.
+2. retrieve_kb ko 4 chunks milte hain.
+3. grade_kb -> "weak", to after_kb search_web bhejta hai.
+4. search_web result lata hai, grade_web -> "weak".
+5. retry_count 0 hai (max se kam), to rewrite_query chalta hai.
+   Nayi query: "VPN password reset procedure SSO MFA", retry_count = 1.
+6. Wapas retrieve_kb. Is baar grade_kb -> "good", to generate_from_kb jawab likhta hai.
+Agar phir bhi weak rehta, retry_count max_retries tak pahunchta aur after_web
+sawal ko "insufficient" bhej deta.
+
+
+CODE MEIN MILE BUGS / SUDHAAR
+-----------------------------
+- state.py mein "cirations" likha hai, "citations" hona chahiye (typo).
+- search_web aur generate_from_kb citations ko overwrite karte hain, append
+  nahi karte. Retry ke baad purane citations ud sakte hain.
+- trace mein "Privat KB retrieval" likha hai, "Private" hona chahiye.

@@ -2,8 +2,10 @@ import time
 from pinecone import Pinecone, ServerlessSpec
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
+from langchain_mistralai import MistralAIEmbeddings
 
 from app.core.config import get_settings
+from app.rag.embeddings import GroqEmbeddings
 
 setting = get_settings()
 
@@ -15,13 +17,14 @@ def get_embeddings():
     global _embeddings
 
     if _embeddings is None:
-        if not setting.embedding_model:
-            raise RuntimeError("embedding_model is missing")
+        if not setting.mistral_api_key:
+            raise RuntimeError("MISTRAL_AI api key is missing")
 
-        _embeddings = HuggingFaceEmbeddings(
-            model_name=setting.embedding_model,
-            encode_kwargs={"normalize_embeddings": True}
+        _embeddings = MistralAIEmbeddings(
+            model=setting.embedding_model,
+            api_key=setting.mistral_api_key,
         )
+
 
     return _embeddings
 
