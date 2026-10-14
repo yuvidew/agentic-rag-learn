@@ -67,8 +67,6 @@ def build_graph():
     graph.add_edge("insufficient", "store_memory")
     graph.add_edge("store_memory", END)
 
-
-
     return graph.compile()
 
 agent_graph = build_graph()
